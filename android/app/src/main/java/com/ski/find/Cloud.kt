@@ -9,7 +9,7 @@ import java.security.SecureRandom
 import java.time.Instant
 
 /**
- * Talks to the Ski Grocery Firebase project (free Spark plan) over its REST API,
+ * Talks to Ski Find's own Firebase project (free Spark plan) over its REST API,
  * so the app needs no Firebase SDK or google-services.json.
  *
  * Data:
@@ -17,11 +17,10 @@ import java.time.Instant
  *   findCircles/{cid}                      { members: [uid], names: {uid: name}, joinCode }
  *   findCircles/{cid}/locations/{uid}      { name, lat, lng, accuracy, speed, battery, charging, platform, updated }
  */
+// Filled in by the GitHub workflow from the FIREBASE_API_KEY and FIREBASE_PROJECT_ID secrets.
 object Config {
-    const val API_KEY = "AIzaSyB3Uecm-SsyACyhDciZgkK_3Njxn9VjkFc"
-    const val PROJECT_ID = "ski-grocery"
-    // Sent in case the web API key is limited to the app's website.
-    const val REFERER = "https://ski-grocery.web.app/"
+    const val API_KEY = "__FIREBASE_API_KEY__"
+    const val PROJECT_ID = "__FIREBASE_PROJECT_ID__"
 }
 
 class Prefs(ctx: Context) {
@@ -97,7 +96,6 @@ class Cloud(ctx: Context) {
             c.connectTimeout = 15_000
             c.readTimeout = 20_000
             c.setRequestProperty("Content-Type", "application/json")
-            c.setRequestProperty("Referer", Config.REFERER)
             if (token != null) c.setRequestProperty("Authorization", "Bearer $token")
             if (body != null) {
                 c.doOutput = true

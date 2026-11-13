@@ -13,24 +13,47 @@ Two-way live location sharing between an iPhone and a Samsung (Android) phone, t
 | Samsung / Android | `android/` | OpenStreetMap (no key needed) | GitHub Actions → APK on the Releases page |
 | iPhone | `ios/` | Apple Maps | GitHub Actions → TestFlight |
 
-**Cost: $0.** Locations are stored in the existing **Ski Grocery** Firebase project (free Spark plan, anonymous sign-in). The database rules for Ski Find live in the Ski-Grocery repo's `firestore.rules` and deploy with it. Each phone can only write its own location, and only people in your circle can read them.
+**Cost: $0.** Locations are stored in Ski Find's own Firebase project (free Spark plan, anonymous sign-in), separate from Ski Grocery. The database rules are in `firebase/firestore.rules` and deploy automatically. Each phone can only write its own location, and only people in your circle can read them.
 
 ---
+
+## One-time setup
+
+### 1. Firebase (free, about 10 minutes, easiest on a computer)
+1. <https://console.firebase.google.com> → **Create a project** → name it `ski-find`. Google Analytics isn't needed.
+2. **Build → Authentication → Get started → Sign-in method → Anonymous → Enable → Save.**
+3. **Build → Firestore Database → Create database** → production mode → location `nam5 (United States)`.
+4. ⚙️ **Project settings → General**: copy the **Project ID** and the **Web API key**.
+   - If the Web API key is blank, scroll to **Your apps**, click the web icon `</>`, register it as "Ski Find" and copy the `apiKey` value.
+5. ⚙️ **Project settings → Service accounts → Generate new private key.** This downloads a JSON file. Keep it private and don't commit it.
+
+### 2. GitHub secrets
+This repo › **Settings › Secrets and variables › Actions** › add:
+
+| Secret | Value |
+|---|---|
+| `FIREBASE_API_KEY` | Web API key from step 1.4 |
+| `FIREBASE_PROJECT_ID` | Project ID from step 1.4, e.g. `ski-find-1a2b3` |
+| `FIREBASE_SERVICE_ACCOUNT` | the whole contents of the JSON file from step 1.5 |
+| `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_CONTENT`, `APPLE_TEAM_ID` | same as your other iPhone apps |
+
+Then **Actions → Database rules → Run workflow** once. After that, the rules re-deploy whenever `firebase/` changes.
 
 ## Install
 
 ### iPhone (TestFlight)
 Every push to `main` that changes `ios/` builds the app and uploads it to TestFlight.
 
-One-time setup:
-1. This repo › **Settings › Secrets and variables › Actions** › add the same 4 secrets as your other iPhone apps: `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_CONTENT`, `APPLE_TEAM_ID`.
-2. **Actions › TestFlight › Run workflow.** The first run registers the bundle ID and may stop at the upload step.
-3. App Store Connect › Apps › **+ › New App** › bundle ID **`com.skistudio.find`**, name "Ski Find" (any unused name works).
-4. Run the TestFlight workflow again. Install from the TestFlight app once Apple finishes processing (10–30 min).
+First time:
+1. **Actions › TestFlight › Run workflow.** The first run registers the bundle ID and may stop at the upload step.
+2. App Store Connect › Apps › **+ › New App** › bundle ID **`com.skistudio.find`**, name "Ski Find" (any unused name works).
+3. Run the TestFlight workflow again. Install from the TestFlight app once Apple finishes processing (10–30 min).
 
 The signing certificate is created once, saved encrypted in `signing/`, and reused on every build (the same one your other apps use), so the account never hits Apple's certificate limit.
 
 ### Samsung
+Keep this repo **public** so her phone can download the app without a GitHub login. No passwords are in it: the Firebase key only identifies the project, and the signing certificate is encrypted.
+
 1. On her phone, open this repo's **Releases** page and download **SkiFind.apk** from the newest release.
 2. Open it and allow "Install unknown apps" for the browser if asked.
 

@@ -36,6 +36,16 @@ jobs:
       - uses: actions/checkout@v4
         if: steps.check.outputs.skip != 'true'
 
+      - name: Fill in Firebase settings
+        if: steps.check.outputs.skip != 'true'
+        env:
+          KEY: ${{ secrets.FIREBASE_API_KEY }}
+          PID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: |
+          KEY=$(printf '%s' "$KEY" | tr -d '[:space:]'); PID=$(printf '%s' "$PID" | tr -d '[:space:]')
+          [ -n "$KEY" ] && [ -n "$PID" ] || { echo "::error::Add the FIREBASE_API_KEY and FIREBASE_PROJECT_ID secrets."; exit 1; }
+          sed -i '' "s|__FIREBASE_API_KEY__|$KEY|; s|__FIREBASE_PROJECT_ID__|$PID|" ios/SkiFind/Cloud.swift
+
       - name: Pick newest Xcode
         if: steps.check.outputs.skip != 'true'
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
@@ -197,7 +207,7 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add signing/dev.p12.enc
             git commit -m "Save encrypted CI signing certificate [skip ci]"
-            git pull --rebase -q origin main && git push origin HEAD:main
+            git pull --rebase --autostash -q origin main && git push origin HEAD:main
           fi
 
           /usr/bin/openssl x509 -inform DER -in "$T/cert.cer" -out "$T/cert.pem"

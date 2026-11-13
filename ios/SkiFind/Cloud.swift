@@ -1,16 +1,15 @@
 import Foundation
 import CoreLocation
 
-/// Talks to the Ski Grocery Firebase project (free Spark plan) over its REST API — no Firebase SDK needed.
+/// Talks to Ski Find's own Firebase project (free Spark plan) over its REST API — no Firebase SDK needed.
 ///
 ///   findCodes/{CODE}                    { circleId }
 ///   findCircles/{cid}                   { members: [uid], names: {uid: name}, joinCode }
 ///   findCircles/{cid}/locations/{uid}   { name, lat, lng, accuracy, speed, battery, charging, platform, sharing, updated }
+/// Filled in by the GitHub workflow from the FIREBASE_API_KEY and FIREBASE_PROJECT_ID secrets.
 enum Config {
-    static let apiKey = "AIzaSyB3Uecm-SsyACyhDciZgkK_3Njxn9VjkFc"
-    static let projectId = "ski-grocery"
-    /// Sent in case the web API key is limited to the app's website.
-    static let referer = "https://ski-grocery.web.app/"
+    static let apiKey = "__FIREBASE_API_KEY__"
+    static let projectId = "__FIREBASE_PROJECT_ID__"
 }
 
 enum Store {
@@ -79,7 +78,6 @@ actor Cloud {
         req.httpMethod = method
         req.timeoutInterval = 20
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue(Config.referer, forHTTPHeaderField: "Referer")
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body { req.httpBody = try JSONSerialization.data(withJSONObject: body) }
         let (data, resp) = try await URLSession.shared.data(for: req)

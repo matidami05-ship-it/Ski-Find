@@ -1,0 +1,33 @@
+name: Database rules
+
+on:
+  push:
+    branches: [main]
+    paths: ["firebase/**", ".github/workflows/firebase.yml"]
+  workflow_dispatch:
+
+jobs:
+  rules:
+    name: Deploy Firestore rules (Firebase Spark)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firebase
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check secrets
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          PID: ${{ secrets.FIREBASE_PROJECT_ID }}
+        run: |
+          [ -n "$SA" ] || { echo "::error::Add the FIREBASE_SERVICE_ACCOUNT secret (the service-account JSON file's contents)."; exit 1; }
+          [ -n "$PID" ] || { echo "::error::Add the FIREBASE_PROJECT_ID secret."; exit 1; }
+          printf '%s' "$SA" > "$RUNNER_TEMP/sa.json"
+          echo "PROJECT_ID=$(printf '%s' "$PID" | tr -d '[:space:]')" >> "$GITHUB_ENV"
+      - name: Deploy rules
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/sa.json
+        run: npx -y firebase-tools@latest deploy --only firestore:rules --project "$PROJECT_ID" --non-interactive
