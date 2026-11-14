@@ -305,6 +305,21 @@ private fun MainScreen(s: UiState, vm: AppViewModel) {
                 else -> {}
             }
 
+            s.update?.let { u ->
+                Surface(shape = RoundedCornerShape(18.dp), color = Color(0xFF1F3B2E), shadowElevation = 6.dp) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.SystemUpdate, null, tint = Color(0xFF6FCF97))
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Update available", fontWeight = FontWeight.SemiBold)
+                            Text(s.updateStatus ?: "Build ${u.build}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(onClick = { vm.installUpdate(ctx) }, enabled = !s.updateBusy) { Text("Install") }
+                    }
+                }
+            }
+
             val pairCode = s.circle?.joinCode.orEmpty()
             if (alone && pairCode.isNotEmpty()) {
                 PairCard(pairCode) { shareCode(ctx, pairCode) }
@@ -542,6 +557,22 @@ private fun SettingsSheet(s: UiState, vm: AppViewModel, onShowCode: () -> Unit, 
         }
         OutlinedButton(onClick = onShowCode, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Filled.PersonAdd, null); Spacer(Modifier.width(8.dp)); Text("Pair code for another phone")
+        }
+
+        HorizontalDivider()
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("App version", fontWeight = FontWeight.SemiBold)
+                Text(
+                    s.updateStatus ?: "Build ${vm.currentBuild}",
+                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (s.update != null) {
+                Button(onClick = { vm.installUpdate(ctx) }, enabled = !s.updateBusy) { Text("Install") }
+            } else {
+                FilledTonalButton(onClick = { vm.checkForUpdate() }, enabled = !s.updateBusy) { Text("Check for updates") }
+            }
         }
 
         HorizontalDivider()

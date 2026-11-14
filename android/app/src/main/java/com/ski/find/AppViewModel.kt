@@ -40,6 +40,11 @@ data class UiState(
     val addresses: Map<String, String> = emptyMap(),
     /** uid -> profile photo */
     val photos: Map<String, Bitmap> = emptyMap(),
+    /** Newer version on GitHub, if any. */
+    val update: Updater.Update? = null,
+    /** "Checking…", "Downloading 40%", "You're on the newest version", or an error. */
+    val updateStatus: String? = null,
+    val updateBusy: Boolean = false,
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -62,6 +67,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             BitmapFactory.decodeFile(File(photoDir, "$uid.jpg").path)?.let { uid to it }
         }.toMap()
         _state.update { it.copy(photos = saved) }
+        checkForUpdate(quiet = true)
         val cid = prefs.circleId
         if (cid == null) {
             _state.update { it.copy(ready = true) }
@@ -185,6 +191,61 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(error = "Couldn't reach Ski Find. Check your connection and try again.") }
             } finally {
                 _state.update { it.copy(busy = false) }
+            }
+        }
+    }
+
+    // ---------- App updates ----------
+
+    val currentBuild: Int get() = Updater.currentBuild(getApplication())
+
+    fun checkForUpdate(quiet: Boolean = false) {
+        if (_state.value.updateBusy) return
+        viewModelScope.launch {
+            _state.update { it.copy(updateBusy = true, updateStatus = if (quiet) it.updateStatus else "Checking…") }
+            try {
+                val u = withContext(Dispatchers.IO) { Updater.check(getApplication()) }
+                _state.update {
+                    it.copy(
+                        update = u,
+                        updateStatus = when {
+                            u != null -> "Build ${u.build} is ready to install."
+                            quiet -> null
+                            else -> "You're on the newest version."
+                        }
+                    )
+                }
+            } catch (e: Exception) {
+                if (!quiet) _state.update { it.copy(updateStatus = "Couldn't check for updates. Check your connection.") }
+            } finally {
+                _state.update { it.copy(updateBusy = false) }
+            }
+        }
+    }
+
+    /** Downloads the update and opens Android's installer. */
+    fun installUpdate(activity: android.content.Context) {
+        val u = _state.value.update ?: return
+        if (_state.value.updateBusy) return
+        if (!Updater.canInstall(activity)) {
+            _state.update { it.copy(updateStatus = "Turn on \"Allow from this source\" for Ski Find, then come back and tap Install again.") }
+            Updater.openInstallPermission(activity)
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(updateBusy = true, updateStatus = "Downloading…") }
+            try {
+                val apk = withContext(Dispatchers.IO) {
+                    Updater.download(getApplication(), u) { f ->
+                        _state.update { it.copy(updateStatus = "Downloading ${(f * 100).toInt()}%") }
+                    }
+                }
+                _state.update { it.copy(updateStatus = "Tap Update on the next screen.") }
+                Updater.install(activity, apk)
+            } catch (e: Exception) {
+                _state.update { it.copy(updateStatus = "Download failed. Try again.") }
+            } finally {
+                _state.update { it.copy(updateBusy = false) }
             }
         }
     }
