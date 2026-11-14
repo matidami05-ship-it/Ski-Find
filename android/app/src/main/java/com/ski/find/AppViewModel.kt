@@ -1,6 +1,14 @@
 package com.ski.find
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.ImageDecoder
+import android.net.Uri
+import android.util.Base64
+import java.io.ByteArrayOutputStream
+import java.io.File
 import android.location.Address
 import android.location.Geocoder
 import android.os.Build
@@ -30,6 +38,8 @@ data class UiState(
     val error: String? = null,
     val offline: Boolean = false,
     val addresses: Map<String, String> = emptyMap(),
+    /** uid -> profile photo */
+    val photos: Map<String, Bitmap> = emptyMap(),
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -43,7 +53,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var pollJob: Job? = null
     private val geoCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    private val photoDir = File(app.filesDir, "photos").apply { mkdirs() }
+    private val photoPrefs = app.getSharedPreferences("photoVersions", android.content.Context.MODE_PRIVATE)
+
     init {
+        // Show saved photos straight away.
+        val saved = photoPrefs.all.keys.mapNotNull { uid ->
+            BitmapFactory.decodeFile(File(photoDir, "$uid.jpg").path)?.let { uid to it }
+        }.toMap()
+        _state.update { it.copy(photos = saved) }
         val cid = prefs.circleId
         if (cid == null) {
             _state.update { it.copy(ready = true) }
@@ -71,6 +89,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                                 _state.update { it.copy(circle = null, people = emptyList()) }
                             } else {
                                 _state.update { it.copy(circle = c, myUid = prefs.uid) }
+                                withContext(Dispatchers.IO) { syncPhotos(c) }
                             }
                         }
                         if (prefs.circleId != null) {
@@ -168,6 +187,82 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(busy = false) }
             }
         }
+    }
+
+    // ---------- Profile photos ----------
+
+    /** Downloads photos that are new or changed since last time; drops ones that were removed. */
+    private fun syncPhotos(c: Circle) {
+        for (uid in c.members) {
+            val version = c.photos[uid]
+            if (!version.isNullOrEmpty()) {
+                if (photoPrefs.getString(uid, null) == version) continue
+                val b64 = runCatching { cloud.loadPhoto(c.id, uid) }.getOrNull() ?: continue
+                val bytes = runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull() ?: continue
+                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: continue
+                savePhoto(uid, bytes, version)
+                _state.update { it.copy(photos = it.photos + (uid to bmp)) }
+            } else if (_state.value.photos.containsKey(uid)) {
+                deletePhoto(uid)
+                _state.update { it.copy(photos = it.photos - uid) }
+            }
+        }
+    }
+
+    private fun savePhoto(uid: String, bytes: ByteArray, version: String) {
+        File(photoDir, "$uid.jpg").writeBytes(bytes)
+        photoPrefs.edit().putString(uid, version).apply()
+    }
+
+    private fun deletePhoto(uid: String) {
+        File(photoDir, "$uid.jpg").delete()
+        photoPrefs.edit().remove(uid).apply()
+    }
+
+    fun setMyPhoto(uri: Uri) = act {
+        val cid = prefs.circleId ?: return@act
+        val bytes = squareJpeg(uri) ?: throw UserError("Couldn't open that picture. Try another one.")
+        val version = cloud.setPhoto(cid, Base64.encodeToString(bytes, Base64.NO_WRAP))
+        val me = cloud.uid()
+        savePhoto(me, bytes, version)
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { bmp ->
+            _state.update { it.copy(photos = it.photos + (me to bmp)) }
+        }
+    }
+
+    fun removeMyPhoto() = act {
+        val cid = prefs.circleId ?: return@act
+        cloud.removePhoto(cid)
+        val me = cloud.uid()
+        deletePhoto(me)
+        _state.update { it.copy(photos = it.photos - me) }
+    }
+
+    /** Center-cropped 256×256 JPEG, roughly 15–30 KB. */
+    private fun squareJpeg(uri: Uri, size: Int = 256): ByteArray? = try {
+        val src = ImageDecoder.decodeBitmap(ImageDecoder.createSource(getApplication<Application>().contentResolver, uri)) { d, info, _ ->
+            d.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            val s = info.size
+            val shortSide = minOf(s.width, s.height)
+            if (shortSide > size * 2) {
+                val k = shortSide / (size * 2)
+                d.setTargetSize(s.width / k, s.height / k)
+            }
+        }
+        val side = minOf(src.width, src.height)
+        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val f = size.toFloat() / side
+        Canvas(out).apply {
+            translate((size - src.width * f) / 2f, (size - src.height * f) / 2f)
+            scale(f, f)
+            drawBitmap(src, 0f, 0f, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+        }
+        ByteArrayOutputStream().use { bos ->
+            out.compress(Bitmap.CompressFormat.JPEG, 80, bos)
+            bos.toByteArray()
+        }
+    } catch (e: Exception) {
+        null
     }
 
     // ---------- Street addresses ----------

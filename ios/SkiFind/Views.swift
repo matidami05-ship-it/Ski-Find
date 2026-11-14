@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import CoreLocation
+import PhotosUI
 
 // MARK: - Colors per person
 
@@ -109,7 +110,8 @@ struct MainView: View {
                 ForEach(model.people) { p in
                     Annotation(p.id == model.myUid ? "You" : p.name, coordinate: p.coordinate, anchor: .bottom) {
                         AvatarPin(
-                            letter: initial(p.id == model.myUid ? "Me" : p.name),
+                            letter: initial(p.name),
+                            image: model.photos[p.id],
                             color: personColor(p.id, me: model.myUid, members: model.members),
                             dim: !p.sharing || (p.updated.map { Date().timeIntervalSince($0) > 3600 } ?? false)
                         )
@@ -208,6 +210,7 @@ struct MainView: View {
                         isMe: p.id == model.myUid,
                         color: personColor(p.id, me: model.myUid, members: model.members),
                         address: model.addresses[p.id],
+                        photo: model.photos[p.id],
                         distance: distanceFromMe(p),
                         onShow: { focus(on: p) }
                     )
@@ -269,17 +272,45 @@ func shareText(_ code: String) -> String {
     "Join me on Ski Find: open the app, enter your name and the pair code \(code), then tap Join."
 }
 
+/// A round picture of someone: their photo if they set one, otherwise their initial on their color.
+struct Avatar: View {
+    let letter: String
+    let image: UIImage?
+    let color: Color
+    var size: CGFloat = 46
+    var dim = false
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(SwiftUI.Circle())
+                    .saturation(dim ? 0 : 1)
+                    .opacity(dim ? 0.7 : 1)
+            } else {
+                SwiftUI.Circle().fill(dim ? Color.gray : color).frame(width: size, height: size)
+                Text(letter).font(.system(size: size * 0.43, weight: .bold)).foregroundStyle(.white)
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
 struct AvatarPin: View {
     let letter: String
+    let image: UIImage?
     let color: Color
     let dim: Bool
 
     var body: some View {
         VStack(spacing: -3) {
             ZStack {
-                SwiftUI.Circle().fill(.white).frame(width: 46, height: 46)
-                SwiftUI.Circle().fill(dim ? Color.gray : color).frame(width: 40, height: 40)
-                Text(letter).font(.system(size: 19, weight: .bold)).foregroundStyle(.white)
+                SwiftUI.Circle().fill(dim ? Color.white : color).frame(width: 52, height: 52)
+                SwiftUI.Circle().fill(.white).frame(width: 48, height: 48)
+                Avatar(letter: letter, image: image, color: color, size: 44, dim: dim)
             }
             Triangle().fill(.white).frame(width: 16, height: 10)
         }
@@ -355,15 +386,13 @@ struct PersonRow: View {
     let isMe: Bool
     let color: Color
     let address: String?
+    let photo: UIImage?
     let distance: CLLocationDistance?
     let onShow: () -> Void
 
     var body: some View {
         HStack(spacing: 14) {
-            ZStack {
-                SwiftUI.Circle().fill(person.sharing ? color : .gray).frame(width: 46, height: 46)
-                Text(initial(isMe ? "Me" : person.name)).font(.system(size: 20, weight: .bold)).foregroundStyle(.white)
-            }
+            Avatar(letter: initial(person.name), image: photo, color: color, size: 46, dim: !person.sharing)
             VStack(alignment: .leading, spacing: 2) {
                 Text(isMe ? "\(person.name) (you)" : person.name).font(.headline).lineLimit(1)
                 Text(address ?? String(format: "%.5f, %.5f", person.lat, person.lng))
@@ -375,12 +404,13 @@ struct PersonRow: View {
                 Button {
                     openDirections()
                 } label: {
-                    Image(systemName: "car.fill")
-                        .font(.system(size: 17, weight: .semibold))
-                        .frame(width: 44, height: 44)
-                        .background(Color.brand.opacity(0.18), in: SwiftUI.Circle())
+                    Label("Drive", systemImage: "car.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .frame(height: 38)
+                        .background(Color.brand.opacity(0.2), in: Capsule())
                 }
-                .accessibilityLabel("Directions")
+                .accessibilityLabel("Directions to \(person.name)")
             }
         }
         .padding(.horizontal, 16)
@@ -424,6 +454,7 @@ struct SettingsView: View {
     @State private var name = Store.name
     @State private var confirmLeave = false
     @State private var removeUid: String?
+    @State private var photoItem: PhotosPickerItem?
 
     var body: some View {
         NavigationStack {
@@ -434,6 +465,29 @@ struct SettingsView: View {
                             Text("Share my location")
                             Text(model.sharing ? "Your partner can see where you are." : "Paused. Your partner sees your last spot as paused.")
                                 .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                    HStack(spacing: 14) {
+                        Avatar(letter: initial(model.myName), image: model.myUid.flatMap { model.photos[$0] },
+                               color: personColor(model.myUid ?? "", me: model.myUid, members: model.members), size: 56)
+                        VStack(alignment: .leading, spacing: 6) {
+                            PhotosPicker(selection: $photoItem, matching: .images) {
+                                Text(model.myUid.flatMap { model.photos[$0] } == nil ? "Add profile photo" : "Change photo")
+                            }
+                            .buttonStyle(.borderless)
+                            if model.myUid.flatMap({ model.photos[$0] }) != nil {
+                                Button("Remove photo", role: .destructive) { model.removeMyPhoto() }
+                                    .buttonStyle(.borderless)
+                            }
+                        }
+                    }
+                    .onChange(of: photoItem) { _, item in
+                        guard let item else { return }
+                        Task {
+                            if let data = try? await item.loadTransferable(type: Data.self), let img = UIImage(data: data) {
+                                model.setMyPhoto(img)
+                            }
+                            photoItem = nil
                         }
                     }
                     HStack {
@@ -447,10 +501,8 @@ struct SettingsView: View {
                     ForEach(model.members, id: \.self) { uid in
                         let n = model.circle?.names[uid] ?? "Someone"
                         HStack {
-                            ZStack {
-                                SwiftUI.Circle().fill(personColor(uid, me: model.myUid, members: model.members)).frame(width: 30, height: 30)
-                                Text(initial(n)).font(.caption.bold()).foregroundStyle(.white)
-                            }
+                            Avatar(letter: initial(n), image: model.photos[uid],
+                                   color: personColor(uid, me: model.myUid, members: model.members), size: 30)
                             Text(uid == model.myUid ? "\(n) (you)" : n)
                             Spacer()
                             if uid != model.myUid {

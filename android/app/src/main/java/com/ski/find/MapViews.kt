@@ -44,7 +44,7 @@ fun personColor(uid: String, myUid: String?, members: List<String>): Int {
     return PALETTE[1 + i % (PALETTE.size - 1)]
 }
 
-private fun avatar(ctx: Context, name: String, color: Int, dim: Boolean): BitmapDrawable {
+private fun avatar(ctx: Context, name: String, color: Int, dim: Boolean, photo: Bitmap?): BitmapDrawable {
     val d = ctx.resources.displayMetrics.density
     val w = (52 * d).toInt()
     val h = (64 * d).toInt()
@@ -61,9 +61,26 @@ private fun avatar(ctx: Context, name: String, color: Int, dim: Boolean): Bitmap
     c.drawPath(tip, p)
     c.drawCircle(r, r, r - 2 * d, p)
     p.clearShadowLayer()
-    // Colored face
+    // Colored ring
     p.color = if (dim) 0xFF8A8F98.toInt() else color
-    c.drawCircle(r, r, r - 5 * d, p)
+    c.drawCircle(r, r, r - 2 * d, p)
+    p.color = 0xFFFFFFFF.toInt()
+    c.drawCircle(r, r, r - 4.5f * d, p)
+    val inner = r - 6.5f * d
+    if (photo != null) {
+        // Photo cropped to a circle
+        val save = c.save()
+        c.clipPath(Path().apply { addCircle(r, r, inner, Path.Direction.CW) })
+        val src = android.graphics.Rect(0, 0, photo.width, photo.height)
+        val dst = android.graphics.RectF(r - inner, r - inner, r + inner, r + inner)
+        val pp = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        if (dim) pp.colorFilter = android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix().apply { setSaturation(0f) })
+        c.drawBitmap(photo, src, dst, pp)
+        c.restoreToCount(save)
+        return BitmapDrawable(ctx.resources, bmp)
+    }
+    p.color = if (dim) 0xFF8A8F98.toInt() else color
+    c.drawCircle(r, r, inner, p)
     // Initial
     p.color = 0xFFFFFFFF.toInt()
     p.textSize = 22 * d
@@ -80,6 +97,7 @@ fun PeopleMap(
     people: List<Person>,
     myUid: String?,
     members: List<String>,
+    photos: Map<String, Bitmap>,
     focus: Focus?,
     onTapPerson: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -116,7 +134,7 @@ fun PeopleMap(
     AndroidView(factory = { map }, modifier = modifier)
 
     // Redraw pins whenever positions change.
-    LaunchedEffect(people, myUid, members) {
+    LaunchedEffect(people, myUid, members, photos) {
         map.overlays.clear()
         val now = System.currentTimeMillis()
         // You first, so your partner's pin sits on top.
@@ -136,7 +154,7 @@ fun PeopleMap(
             val stale = !person.sharing || now - person.updated > 60 * 60_000L
             map.overlays.add(Marker(map).apply {
                 position = pt
-                icon = avatar(ctx, if (person.uid == myUid) "Me" else person.name, color, stale)
+                icon = avatar(ctx, person.name, color, stale, photos[person.uid])
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                 setOnMarkerClickListener { _, _ -> onTapPerson(person.uid); true }
             })

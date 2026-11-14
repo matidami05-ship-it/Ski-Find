@@ -15,7 +15,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.Dp
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -229,6 +236,7 @@ private fun MainScreen(s: UiState, vm: AppViewModel) {
             people = s.people,
             myUid = s.myUid,
             members = members,
+            photos = s.photos,
             focus = focus,
             onTapPerson = { focus = Focus(it) },
             modifier = Modifier.fillMaxSize()
@@ -318,6 +326,7 @@ private fun MainScreen(s: UiState, vm: AppViewModel) {
                                 isMe = p.uid == s.myUid,
                                 color = Color(personColor(p.uid, s.myUid, members)),
                                 address = s.addresses[p.uid],
+                                photo = s.photos[p.uid],
                                 distanceFromMe = if (me != null && p.uid != s.myUid) distanceMeters(me, p) else null,
                                 onShow = { focus = Focus(p.uid) },
                                 onDirections = { openDirections(ctx, p) },
@@ -399,6 +408,7 @@ private fun PersonRow(
     isMe: Boolean,
     color: Color,
     address: String?,
+    photo: android.graphics.Bitmap?,
     distanceFromMe: Double?,
     onShow: () -> Unit,
     onDirections: () -> Unit,
@@ -411,15 +421,7 @@ private fun PersonRow(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            Modifier.size(46.dp).clip(CircleShape).background(if (p.sharing) color else Color(0xFF8A8F98)),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                (if (isMe) "Me" else p.name).trim().take(1).uppercase(),
-                color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp
-            )
-        }
+        Avatar(p.name, photo, color, 46.dp, dim = !p.sharing)
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(if (isMe) "${p.name} (you)" else p.name, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -437,9 +439,36 @@ private fun PersonRow(
             Text(bits.joinToString(" · "), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (!isMe) {
-            IconButton(onClick = onDirections) {
-                Icon(Icons.Filled.Directions, "Directions", tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(8.dp))
+            FilledTonalButton(onClick = onDirections, contentPadding = PaddingValues(horizontal = 12.dp)) {
+                Icon(Icons.Filled.Directions, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Drive")
             }
+        }
+    }
+}
+
+/** Someone's photo if they set one, otherwise their initial on their color. */
+@Composable
+fun Avatar(name: String, photo: android.graphics.Bitmap?, color: Color, size: Dp, dim: Boolean = false) {
+    Box(
+        Modifier.size(size).clip(CircleShape).background(if (dim) Color(0xFF8A8F98) else color),
+        contentAlignment = Alignment.Center
+    ) {
+        if (photo != null) {
+            Image(
+                bitmap = remember(photo) { photo.asImageBitmap() },
+                contentDescription = name,
+                contentScale = ContentScale.Crop,
+                colorFilter = if (dim) ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) }) else null,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(
+                name.trim().take(1).uppercase().ifEmpty { "?" },
+                color = Color.White, fontWeight = FontWeight.Bold, fontSize = (size.value * 0.43f).sp
+            )
         }
     }
 }
@@ -451,6 +480,10 @@ private fun SettingsSheet(s: UiState, vm: AppViewModel, onShowCode: () -> Unit, 
     var confirmLeave by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf<String?>(null) }
     val circle = s.circle
+    val myPhoto = s.myUid?.let { s.photos[it] }
+    val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) vm.setMyPhoto(uri)
+    }
 
     Column(
         Modifier
@@ -460,6 +493,21 @@ private fun SettingsSheet(s: UiState, vm: AppViewModel, onShowCode: () -> Unit, 
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text("Settings", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Avatar(s.myName, myPhoto, Color(personColor(s.myUid ?: "", s.myUid, circle?.members.orEmpty())), 60.dp)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Profile photo", fontWeight = FontWeight.SemiBold)
+                Text("Shows on your pin on both phones.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                FilledTonalButton(onClick = {
+                    pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }, enabled = !s.busy) { Text(if (myPhoto == null) "Add" else "Change") }
+                if (myPhoto != null) TextButton(onClick = { vm.removeMyPhoto() }, enabled = !s.busy) { Text("Remove") }
+            }
+        }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -486,10 +534,7 @@ private fun SettingsSheet(s: UiState, vm: AppViewModel, onShowCode: () -> Unit, 
         if (circle != null) circle.members.forEach { uid ->
             val n = circle.names[uid] ?: "Someone"
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(32.dp).clip(CircleShape).background(Color(personColor(uid, s.myUid, circle.members))),
-                    contentAlignment = Alignment.Center
-                ) { Text(n.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold) }
+                Avatar(n, s.photos[uid], Color(personColor(uid, s.myUid, circle.members)), 32.dp)
                 Spacer(Modifier.width(12.dp))
                 Text(if (uid == s.myUid) "$n (you)" else n, Modifier.weight(1f))
                 if (uid != s.myUid) TextButton({ confirmRemove = uid }) { Text("Remove") }

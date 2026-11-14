@@ -43,6 +43,15 @@ service cloud.firestore {
         allow create, update: if inCircle(cid) && request.auth.uid == uid;
         allow delete: if inCircle(cid);
       }
+
+      // Profile photos (small JPEGs, base64). Everyone in the circle sees them; you can only set your own.
+      match /photos/{uid} {
+        allow read: if inCircle(cid);
+        allow create, update: if inCircle(cid) && request.auth.uid == uid
+          && request.resource.data.data is string
+          && request.resource.data.data.size() < 300000;
+        allow delete: if inCircle(cid);
+      }
     }
 
     // Everything else is closed.

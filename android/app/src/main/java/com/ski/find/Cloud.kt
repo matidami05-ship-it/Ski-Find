@@ -77,6 +77,8 @@ data class Circle(
     val members: List<String>,
     val names: Map<String, String>,
     val joinCode: String,
+    /** uid -> version of that person's profile photo (changes whenever they pick a new one). */
+    val photos: Map<String, String> = emptyMap(),
 )
 
 class HttpError(val code: Int, body: String) : Exception("HTTP $code ${body.take(300)}")
@@ -241,15 +243,51 @@ class Cloud(ctx: Context) {
     fun remove(cid: String, who: String) {
         commit(
             JSONObject().put("delete", name("findCircles/$cid/locations/$who")),
+            JSONObject().put("delete", name("findCircles/$cid/photos/$who")),
             JSONObject()
                 .put("update", JSONObject().put("name", name("findCircles/$cid")).put("fields", JSONObject()))
-                .put("updateMask", JSONObject().put("fieldPaths", JSONArray().put("names.`$who`")))
+                .put("updateMask", JSONObject().put("fieldPaths", JSONArray().put("names.`$who`").put("photos.`$who`")))
                 .put("updateTransforms", JSONArray().put(JSONObject()
                     .put("fieldPath", "members")
                     .put("removeAllFromArray", JSONObject().put("values", JSONArray().put(str(who))))))
                 .put("currentDocument", JSONObject().put("exists", true)),
         )
     }
+
+    // ---------- Profile photos ----------
+
+    /** Saves your photo (base64 JPEG) and bumps its version so other phones download it. Returns the version. */
+    fun setPhoto(cid: String, base64: String): String {
+        val uid = uid()
+        val version = randomId(8)
+        commit(
+            JSONObject().put("update", JSONObject()
+                .put("name", name("findCircles/$cid/photos/$uid"))
+                .put("fields", JSONObject().put("data", str(base64)).put("version", str(version)))),
+            JSONObject()
+                .put("update", JSONObject()
+                    .put("name", name("findCircles/$cid"))
+                    .put("fields", JSONObject().put("photos", map(JSONObject().put(uid, str(version))))))
+                .put("updateMask", JSONObject().put("fieldPaths", JSONArray().put("photos.`$uid`")))
+                .put("currentDocument", JSONObject().put("exists", true)),
+        )
+        return version
+    }
+
+    fun removePhoto(cid: String) {
+        val uid = uid()
+        commit(
+            JSONObject().put("delete", name("findCircles/$cid/photos/$uid")),
+            JSONObject()
+                .put("update", JSONObject().put("name", name("findCircles/$cid")).put("fields", JSONObject()))
+                .put("updateMask", JSONObject().put("fieldPaths", JSONArray().put("photos.`$uid`")))
+                .put("currentDocument", JSONObject().put("exists", true)),
+        )
+    }
+
+    /** Base64 JPEG for someone's photo, or null if they have none. */
+    fun loadPhoto(cid: String, uid: String): String? =
+        getDoc("findCircles/$cid/photos/$uid")?.let { fields(it).optJSONObject("data")?.optString("stringValue") }
 
     // ---------- Locations ----------
 
@@ -318,11 +356,13 @@ class Cloud(ctx: Context) {
         val f = fields(d)
         val members = f.optJSONObject("members")?.optJSONObject("arrayValue")?.optJSONArray("values")
         val names = f.optJSONObject("names")?.optJSONObject("mapValue")?.optJSONObject("fields")
+        val photos = f.optJSONObject("photos")?.optJSONObject("mapValue")?.optJSONObject("fields")
         return Circle(
             id = cid,
             members = (0 until (members?.length() ?: 0)).map { members!!.getJSONObject(it).optString("stringValue") },
             names = names?.keys()?.asSequence()?.associateWith { names!!.getJSONObject(it).optString("stringValue") } ?: emptyMap(),
             joinCode = f.optJSONObject("joinCode")?.optString("stringValue") ?: "",
+            photos = photos?.keys()?.asSequence()?.associateWith { photos!!.getJSONObject(it).optString("stringValue") } ?: emptyMap(),
         )
     }
 

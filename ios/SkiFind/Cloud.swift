@@ -51,6 +51,8 @@ struct Circle: Equatable {
     var members: [String]
     var names: [String: String]
     var joinCode: String
+    /// uid -> version of that person's profile photo (changes whenever they pick a new one).
+    var photos: [String: String] = [:]
 }
 
 struct HTTPError: Error {
@@ -229,13 +231,46 @@ actor Cloud {
     func remove(_ cid: String, who: String) async throws {
         try await commit([
             ["delete": name("findCircles/\(cid)/locations/\(who)")],
+            ["delete": name("findCircles/\(cid)/photos/\(who)")],
             [
                 "update": ["name": name("findCircles/\(cid)"), "fields": [String: Any]()],
-                "updateMask": ["fieldPaths": ["names.`\(who)`"]],
+                "updateMask": ["fieldPaths": ["names.`\(who)`", "photos.`\(who)`"]],
                 "updateTransforms": [["fieldPath": "members", "removeAllFromArray": ["values": [str(who)]]]],
                 "currentDocument": ["exists": true],
             ],
         ])
+    }
+
+    // MARK: Profile photos
+
+    /// Saves your photo (base64 JPEG) and bumps its version so other phones download it. Returns the version.
+    func setPhoto(_ cid: String, base64: String) async throws -> String {
+        let uid = try await uid()
+        let version = Self.randomId(8)
+        try await commit([
+            ["update": ["name": name("findCircles/\(cid)/photos/\(uid)"),
+                        "fields": ["data": str(base64), "version": str(version)]]],
+            ["update": ["name": name("findCircles/\(cid)"), "fields": ["photos": map([uid: str(version)])]],
+             "updateMask": ["fieldPaths": ["photos.`\(uid)`"]],
+             "currentDocument": ["exists": true]],
+        ])
+        return version
+    }
+
+    func removePhoto(_ cid: String) async throws {
+        let uid = try await uid()
+        try await commit([
+            ["delete": name("findCircles/\(cid)/photos/\(uid)")],
+            ["update": ["name": name("findCircles/\(cid)"), "fields": [String: Any]()],
+             "updateMask": ["fieldPaths": ["photos.`\(uid)`"]],
+             "currentDocument": ["exists": true]],
+        ])
+    }
+
+    /// Base64 JPEG for someone's photo, or nil if they have none.
+    func loadPhoto(_ cid: String, uid: String) async throws -> String? {
+        guard let d = try await getDoc("findCircles/\(cid)/photos/\(uid)") else { return nil }
+        return string(fields(d), "data")
     }
 
     // MARK: Locations
@@ -299,7 +334,10 @@ actor Cloud {
         let nameFields = ((f["names"] as? [String: Any])?["mapValue"] as? [String: Any])?["fields"] as? [String: Any] ?? [:]
         var names: [String: String] = [:]
         for (k, v) in nameFields { names[k] = (v as? [String: Any])?["stringValue"] as? String ?? "" }
-        return Circle(id: cid, members: members, names: names, joinCode: string(f, "joinCode") ?? "")
+        let photoFields = ((f["photos"] as? [String: Any])?["mapValue"] as? [String: Any])?["fields"] as? [String: Any] ?? [:]
+        var photos: [String: String] = [:]
+        for (k, v) in photoFields { photos[k] = (v as? [String: Any])?["stringValue"] as? String ?? "" }
+        return Circle(id: cid, members: members, names: names, joinCode: string(f, "joinCode") ?? "", photos: photos)
     }
 
     private func fields(_ d: [String: Any]) -> [String: Any] { d["fields"] as? [String: Any] ?? [:] }

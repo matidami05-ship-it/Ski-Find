@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import SwiftUI
+import UIKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -13,6 +14,8 @@ final class AppModel: ObservableObject {
     @Published var error: String?
     @Published var offline = false
     @Published var addresses: [String: String] = [:]
+    /// uid -> profile photo
+    @Published var photos: [String: UIImage] = [:]
 
     private var pollTask: Task<Void, Never>?
     private var geoCache: [String: String] = [:]
@@ -20,6 +23,7 @@ final class AppModel: ObservableObject {
     private var removedObserver: NSObjectProtocol?
 
     init() {
+        photos = PhotoCache.loadAll()
         if let cid = Store.circleId {
             // Show the map right away; details fill in when loaded.
             circle = Circle(id: cid, members: [], names: [:], joinCode: "")
@@ -68,6 +72,7 @@ final class AppModel: ObservableObject {
                 if let c = try await Cloud.shared.loadCircle(cid) {
                     circle = c
                     myUid = Store.uid
+                    await syncPhotos(c)
                 } else {
                     // Removed on the other phone.
                     Store.circleId = nil
@@ -178,6 +183,45 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: Profile photos
+
+    /// Downloads photos that are new or changed since last time; drops ones that were removed.
+    private func syncPhotos(_ c: Circle) async {
+        for uid in c.members {
+            let version = c.photos[uid]
+            if let version, !version.isEmpty {
+                guard PhotoCache.version(uid) != version else { continue }
+                if let b64 = try? await Cloud.shared.loadPhoto(c.id, uid: uid),
+                   let data = Data(base64Encoded: b64), let img = UIImage(data: data) {
+                    PhotoCache.save(uid, data: data, version: version)
+                    photos[uid] = img
+                }
+            } else if photos[uid] != nil {
+                PhotoCache.remove(uid)
+                photos[uid] = nil
+            }
+        }
+    }
+
+    func setMyPhoto(_ image: UIImage) {
+        guard let data = PhotoCache.squareJPEG(image) else { return }
+        act {
+            guard let cid = Store.circleId, let me = Store.uid else { return }
+            let version = try await Cloud.shared.setPhoto(cid, base64: data.base64EncodedString())
+            PhotoCache.save(me, data: data, version: version)
+            self.photos[me] = UIImage(data: data)
+        }
+    }
+
+    func removeMyPhoto() {
+        act {
+            guard let cid = Store.circleId, let me = Store.uid else { return }
+            try await Cloud.shared.removePhoto(cid)
+            PhotoCache.remove(me)
+            self.photos[me] = nil
+        }
+    }
+
     // MARK: Street addresses
 
     private func lookupAddresses(_ list: [Person]) async {
@@ -199,5 +243,53 @@ final class AppModel: ObservableObject {
                 addresses[p.id] = text
             }
         }
+    }
+}
+
+/// Keeps profile photos on disk so they show instantly and are only downloaded when they change.
+enum PhotoCache {
+    private static var dir: URL {
+        let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("photos", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+    private static var versions: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: "photoVersions") as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "photoVersions") }
+    }
+
+    static func version(_ uid: String) -> String? { versions[uid] }
+
+    static func save(_ uid: String, data: Data, version: String) {
+        try? data.write(to: dir.appendingPathComponent("\(uid).jpg"), options: .atomic)
+        versions[uid] = version
+    }
+
+    static func remove(_ uid: String) {
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(uid).jpg"))
+        versions[uid] = nil
+    }
+
+    static func loadAll() -> [String: UIImage] {
+        var out: [String: UIImage] = [:]
+        for uid in versions.keys {
+            if let img = UIImage(contentsOfFile: dir.appendingPathComponent("\(uid).jpg").path) { out[uid] = img }
+        }
+        return out
+    }
+
+    /// Center-cropped 256×256 JPEG, roughly 15–30 KB.
+    static func squareJPEG(_ image: UIImage, size: CGFloat = 256) -> Data? {
+        let w = image.size.width, h = image.size.height
+        guard w > 0, h > 0 else { return nil }
+        let side = min(w, h)
+        let scale = size / side
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let out = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format).image { _ in
+            image.draw(in: CGRect(x: (size - w * scale) / 2, y: (size - h * scale) / 2, width: w * scale, height: h * scale))
+        }
+        return out.jpegData(compressionQuality: 0.75)
     }
 }
