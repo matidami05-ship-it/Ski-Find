@@ -495,6 +495,7 @@ private fun SettingsSheet(s: UiState, vm: AppViewModel, onShowCode: () -> Unit, 
     var confirmLeave by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf<String?>(null) }
     val circle = s.circle
+    var joinCode by remember { mutableStateOf("") }
     val myPhoto = s.myUid?.let { s.photos[it] }
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) vm.setMyPhoto(uri)
@@ -554,6 +555,21 @@ private fun SettingsSheet(s: UiState, vm: AppViewModel, onShowCode: () -> Unit, 
                 Text(if (uid == s.myUid) "$n (you)" else n, Modifier.weight(1f))
                 if (uid != s.myUid) TextButton({ confirmRemove = uid }) { Text("Remove") }
             }
+        }
+        Text("Join with a code", fontWeight = FontWeight.SemiBold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = joinCode,
+                onValueChange = { joinCode = it.uppercase().filter { c -> c.isLetterOrDigit() }.take(6) },
+                label = { Text("Code from the other phone") }, singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(10.dp))
+            FilledTonalButton(
+                onClick = { vm.switchTo(joinCode); joinCode = ""; onClose() },
+                enabled = joinCode.length == 6 && joinCode != circle?.joinCode && !s.busy
+            ) { Text("Join") }
         }
         OutlinedButton(onClick = onShowCode, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Filled.PersonAdd, null); Spacer(Modifier.width(8.dp)); Text("Pair code for another phone")

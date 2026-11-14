@@ -138,6 +138,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(circle = c, myUid = prefs.uid, myName = prefs.name, sharing = true) }
     }
 
+    /** Join someone else's code from Settings, leaving the group this phone is in now. */
+    fun switchTo(code: String) = act {
+        val old = prefs.circleId
+        val name = prefs.name.ifBlank { "Me" }
+        val c = cloud.joinCircle(name, code)
+            ?: throw UserError("That code wasn't found. Check it on the other phone.")
+        if (old != null && old != c.id) runCatching { cloud.remove(old, cloud.uid()) }
+        prefs.sharing = true
+        prefs.lastUploadAt = 0
+        _state.update { it.copy(circle = c, people = emptyList(), myUid = prefs.uid, myName = prefs.name, sharing = true) }
+        LocationService.start(getApplication())
+        refreshNow()
+    }
+
     fun rename(name: String) = act {
         val cid = prefs.circleId ?: return@act
         cloud.rename(cid, name.trim())

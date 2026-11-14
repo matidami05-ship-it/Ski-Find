@@ -111,6 +111,22 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Join someone else's code from Settings, leaving the group this phone is in now.
+    func switchTo(code: String) {
+        act {
+            let old = Store.circleId
+            let name = Store.name.isEmpty ? "Me" : Store.name
+            guard let c = try await Cloud.shared.joinCircle(myName: name, code: code) else {
+                throw UserFacingError(message: "That code wasn't found. Check it on the other phone.")
+            }
+            if let old, old != c.id, let me = Store.uid {
+                try? await Cloud.shared.remove(old, who: me)
+            }
+            self.people = []
+            self.didPair(c)
+        }
+    }
+
     private func didPair(_ c: Circle) {
         Store.sharing = true
         sharing = true

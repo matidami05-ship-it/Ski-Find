@@ -455,6 +455,7 @@ struct SettingsView: View {
     @State private var confirmLeave = false
     @State private var removeUid: String?
     @State private var photoItem: PhotosPickerItem?
+    @State private var joinCode = ""
 
     var body: some View {
         NavigationStack {
@@ -525,6 +526,29 @@ struct SettingsView: View {
                     } footer: {
                         Text("To add a phone: open Ski Find on it, enter a name and this code, then tap Join.")
                     }
+                }
+
+                Section {
+                    HStack {
+                        TextField("Code from the other phone", text: $joinCode)
+                            .textInputAutocapitalization(.characters)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                            .onChange(of: joinCode) { _, v in
+                                let clean = String(v.uppercased().filter { $0.isLetter || $0.isNumber }.prefix(6))
+                                if clean != v { joinCode = clean }
+                            }
+                        Button("Join") {
+                            model.switchTo(code: joinCode)
+                            joinCode = ""
+                            dismiss()
+                        }
+                        .disabled(joinCode.count != 6 || joinCode == model.circle?.joinCode || model.busy)
+                    }
+                } header: {
+                    Text("Join with a code")
+                } footer: {
+                    Text("Enter the 6-letter code shown on the other phone to share with each other.")
                 }
 
                 Section {
