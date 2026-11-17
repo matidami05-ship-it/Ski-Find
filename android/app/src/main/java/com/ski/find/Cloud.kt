@@ -53,6 +53,23 @@ class Prefs(ctx: Context) {
     var lastUploadLat: Double
         get() = Double.fromBits(p.getLong("lastUploadLat", 0))
         set(v) = p.edit().putLong("lastUploadLat", v.toBits()).apply()
+    var lastHistoryDay: String?
+        get() = p.getString("lastHistoryDay", null)
+        set(v) = p.edit().putString("lastHistoryDay", v).apply()
+    var alerts: Boolean
+        get() = p.getBoolean("alerts", true)
+        set(v) = p.edit().putBoolean("alerts", v).apply()
+    var lastEventAt: Long
+        get() = p.getLong("lastEventAt", 0)
+        set(v) = p.edit().putLong("lastEventAt", v).apply()
+    /** Place ids this phone is currently inside, comma-separated. */
+    var insidePlaces: Set<String>
+        get() = p.getStringSet("insidePlaces", emptySet()) ?: emptySet()
+        set(v) = p.edit().putStringSet("insidePlaces", v).apply()
+    /** Place ids we've already worked out inside/outside for (so the first check doesn't alert). */
+    var knownPlaces: Set<String>
+        get() = p.getStringSet("knownPlaces", emptySet()) ?: emptySet()
+        set(v) = p.edit().putStringSet("knownPlaces", v).apply()
     var lastUploadLng: Double
         get() = Double.fromBits(p.getLong("lastUploadLng", 0))
         set(v) = p.edit().putLong("lastUploadLng", v.toBits()).apply()
@@ -70,6 +87,25 @@ data class Person(
     val platform: String,
     val sharing: Boolean,
     val updated: Long,
+)
+
+data class Place(
+    val id: String,
+    val name: String,
+    val lat: Double,
+    val lng: Double,
+    val radius: Double,
+)
+
+data class HistPoint(val lat: Double, val lng: Double, val t: Long, val accuracy: Double)
+
+data class PlaceEvent(
+    val id: String,
+    val uid: String,
+    val person: String,
+    val place: String,
+    val arrived: Boolean,
+    val at: Long,
 )
 
 data class Circle(
@@ -306,10 +342,134 @@ class Cloud(ctx: Context) {
             .put("sharing", bool(sharing))
             .put("platform", str("android"))
         if (battery != null) f.put("battery", int(battery.toLong()))
-        commit(JSONObject()
-            .put("update", JSONObject().put("name", name("findCircles/$cid/locations/$uid")).put("fields", f))
-            .put("updateTransforms", JSONArray().put(JSONObject()
-                .put("fieldPath", "updated").put("setToServerValue", "REQUEST_TIME"))))
+        val now = System.currentTimeMillis()
+        val day = dayKey(now)
+        val point = map(JSONObject()
+            .put("lat", dbl(lat)).put("lng", dbl(lng))
+            .put("t", int(now)).put("acc", dbl(accuracy)))
+        val writes = mutableListOf(
+            JSONObject()
+                .put("update", JSONObject().put("name", name("findCircles/$cid/locations/$uid")).put("fields", f))
+                .put("updateTransforms", JSONArray().put(JSONObject()
+                    .put("fieldPath", "updated").put("setToServerValue", "REQUEST_TIME"))),
+            // Today's history doc, one point appended.
+            JSONObject()
+                .put("update", JSONObject()
+                    .put("name", name("findCircles/$cid/history/${uid}_$day"))
+                    .put("fields", JSONObject().put("day", str(day))))
+                .put("updateMask", JSONObject().put("fieldPaths", JSONArray().put("day")))
+                .put("updateTransforms", JSONArray().put(JSONObject()
+                    .put("fieldPath", "points")
+                    .put("appendMissingElements", JSONObject().put("values", JSONArray().put(point))))),
+        )
+        // First point of a new day: drop history older than a week.
+        if (prefs.lastHistoryDay != day) {
+            writes += JSONObject().put("delete", name("findCircles/$cid/history/${uid}_${dayKey(now - 8 * DAY_MS)}"))
+        }
+        commit(*writes.toTypedArray())
+        prefs.lastHistoryDay = day
+    }
+
+    // ---------- History ----------
+
+    /** One person's points for a day ("yyyy-MM-dd"), oldest first. */
+    fun history(cid: String, uid: String, day: String): List<HistPoint> {
+        val d = getDoc("findCircles/$cid/history/${uid}_$day") ?: return emptyList()
+        val values = fields(d).optJSONObject("points")?.optJSONObject("arrayValue")?.optJSONArray("values")
+            ?: return emptyList()
+        return (0 until values.length()).mapNotNull { i ->
+            val f = values.getJSONObject(i).optJSONObject("mapValue")?.optJSONObject("fields") ?: return@mapNotNull null
+            HistPoint(
+                lat = num(f, "lat") ?: return@mapNotNull null,
+                lng = num(f, "lng") ?: return@mapNotNull null,
+                t = num(f, "t")?.toLong() ?: return@mapNotNull null,
+                accuracy = num(f, "acc") ?: 0.0,
+            )
+        }.sortedBy { it.t }
+    }
+
+    // ---------- Places ----------
+
+    fun places(cid: String): List<Place> {
+        val r = http("GET", "$base/findCircles/$cid/places?pageSize=50", null, token())
+        val docs = r.optJSONArray("documents") ?: return emptyList()
+        return (0 until docs.length()).mapNotNull { i ->
+            val d = docs.getJSONObject(i)
+            val f = fields(d)
+            Place(
+                id = d.getString("name").substringAfterLast('/'),
+                name = f.optJSONObject("name")?.optString("stringValue") ?: return@mapNotNull null,
+                lat = num(f, "lat") ?: return@mapNotNull null,
+                lng = num(f, "lng") ?: return@mapNotNull null,
+                radius = num(f, "radius") ?: 150.0,
+            )
+        }.sortedBy { it.name.lowercase() }
+    }
+
+    fun savePlace(cid: String, p: Place) {
+        commit(JSONObject().put("update", JSONObject()
+            .put("name", name("findCircles/$cid/places/${p.id}"))
+            .put("fields", JSONObject()
+                .put("name", str(p.name)).put("lat", dbl(p.lat)).put("lng", dbl(p.lng))
+                .put("radius", dbl(p.radius)).put("by", str(uid())))))
+    }
+
+    fun deletePlace(cid: String, id: String) {
+        commit(JSONObject().put("delete", name("findCircles/$cid/places/$id")))
+    }
+
+    // ---------- Arrive / leave events ----------
+
+    fun addEvent(cid: String, place: String, arrived: Boolean) {
+        val uid = uid()
+        commit(JSONObject().put("update", JSONObject()
+            .put("name", name("findCircles/$cid/events/${randomId(20)}"))
+            .put("fields", JSONObject()
+                .put("uid", str(uid)).put("person", str(prefs.name)).put("place", str(place))
+                .put("kind", str(if (arrived) "arrived" else "left"))
+                .put("at", int(System.currentTimeMillis())))))
+    }
+
+    /** Events newer than [after] (ms), oldest first. */
+    fun eventsSince(cid: String, after: Long): List<PlaceEvent> {
+        val q = JSONObject().put("structuredQuery", JSONObject()
+            .put("from", JSONArray().put(JSONObject().put("collectionId", "events")))
+            .put("where", JSONObject().put("fieldFilter", JSONObject()
+                .put("field", JSONObject().put("fieldPath", "at"))
+                .put("op", "GREATER_THAN")
+                .put("value", int(after))))
+            .put("orderBy", JSONArray().put(JSONObject()
+                .put("field", JSONObject().put("fieldPath", "at")).put("direction", "ASCENDING")))
+            .put("limit", 20))
+        val c = URL("$base/findCircles/$cid:runQuery").openConnection() as HttpURLConnection
+        val text = try {
+            c.requestMethod = "POST"
+            c.connectTimeout = 15_000
+            c.readTimeout = 20_000
+            c.setRequestProperty("Content-Type", "application/json")
+            c.setRequestProperty("Authorization", "Bearer ${token()}")
+            c.doOutput = true
+            c.outputStream.use { it.write(q.toString().toByteArray()) }
+            val code = c.responseCode
+            val body = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            if (code !in 200..299) throw HttpError(code, body)
+            body
+        } finally {
+            c.disconnect()
+        }
+        val arr = JSONArray(text)
+        return (0 until arr.length()).mapNotNull { i ->
+            val d = arr.getJSONObject(i).optJSONObject("document") ?: return@mapNotNull null
+            val f = fields(d)
+            PlaceEvent(
+                id = d.getString("name").substringAfterLast('/'),
+                uid = f.optJSONObject("uid")?.optString("stringValue") ?: "",
+                person = f.optJSONObject("person")?.optString("stringValue") ?: "",
+                place = f.optJSONObject("place")?.optString("stringValue") ?: "",
+                arrived = f.optJSONObject("kind")?.optString("stringValue") == "arrived",
+                at = num(f, "at")?.toLong() ?: 0L,
+            )
+        }
     }
 
     /** Marks this phone as paused without moving its pin. */
@@ -383,6 +543,10 @@ class Cloud(ctx: Context) {
     private fun map(fields: JSONObject) = JSONObject().put("mapValue", JSONObject().put("fields", fields))
 
     companion object {
+        const val DAY_MS = 24 * 60 * 60 * 1000L
+        fun dayKey(ms: Long): String =
+            java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+
         private val rnd = SecureRandom()
         private const val ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
         private const val CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no 0/O or 1/I

@@ -46,6 +46,7 @@ class LocationService : Service() {
     companion object {
         private const val TAG = "SkiFind"
         const val CHANNEL = "sharing"
+        const val ALERTS = "alerts"
         private const val NOTIF_ID = 7
         private const val INTERVAL_MS = 60_000L        // GPS check every minute
         private const val HEARTBEAT_MS = 10 * 60_000L  // upload at least every 10 minutes even when still
@@ -75,6 +76,13 @@ class LocationService : Service() {
 
         fun ensureChannel(ctx: Context) {
             val nm = ctx.getSystemService(NotificationManager::class.java)
+            if (nm.getNotificationChannel(ALERTS) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(ALERTS, "Arrive & leave alerts", NotificationManager.IMPORTANCE_HIGH).apply {
+                        description = "When someone arrives at or leaves a saved place"
+                    }
+                )
+            }
             if (nm.getNotificationChannel(CHANNEL) == null) {
                 nm.createNotificationChannel(
                     NotificationChannel(CHANNEL, "Location sharing", NotificationManager.IMPORTANCE_LOW).apply {
@@ -101,6 +109,9 @@ class LocationService : Service() {
     private val uploadLock = Mutex()
     private var listening = false
     @Volatile private var lastFix: Location? = null
+    @Volatile private var places: List<Place> = emptyList()
+    @Volatile private var placesLoaded = false
+    private val placeLock = Mutex()
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -113,6 +124,19 @@ class LocationService : Service() {
         fused = LocationServices.getFusedLocationProviderClient(this)
         cloud = Cloud(this)
         ensureChannel(this)
+        // Every minute: check for the other person's arrive/leave alerts; every 5 minutes refresh saved places.
+        scope.launch {
+            var tick = 0
+            while (isActive) {
+                val cid = cloud.prefs.circleId
+                if (cid != null) {
+                    if (tick % 5 == 0) runCatching { places = cloud.places(cid); placesLoaded = true }
+                    runCatching { checkEvents(cid) }
+                }
+                tick++
+                delay(60_000)
+            }
+        }
         // Heartbeat so your partner can see you're still sharing while you sit still.
         scope.launch {
             while (isActive) {
@@ -148,6 +172,8 @@ class LocationService : Service() {
             fused.requestLocationUpdates(request, callback, Looper.getMainLooper())
             listening = true
         }
+        // Pick up places added or changed in the app.
+        prefs.circleId?.let { cid -> scope.launch { runCatching { places = cloud.places(cid); placesLoaded = true } } }
         // Every start (app opened, boot, toggle) also sends a fresh position right away.
         fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
             .addOnSuccessListener { loc -> if (loc != null) onFix(loc, force = true) }
@@ -159,6 +185,7 @@ class LocationService : Service() {
         val prefs = cloud.prefs
         val cid = prefs.circleId ?: return
         if (!prefs.sharing) return
+        scope.launch { placeLock.withLock { runCatching { checkPlaces(cid, loc) } } }
         val moved = FloatArray(1)
         Location.distanceBetween(prefs.lastUploadLat, prefs.lastUploadLng, loc.latitude, loc.longitude, moved)
         val stale = System.currentTimeMillis() - prefs.lastUploadAt > HEARTBEAT_MS
@@ -187,6 +214,67 @@ class LocationService : Service() {
                 } catch (e: Exception) {
                     Log.w(TAG, "upload failed (offline?)", e)
                 }
+            }
+        }
+    }
+
+    /** Works out whether we just arrived at or left a saved place, and tells the circle. */
+    private fun checkPlaces(cid: String, loc: Location) {
+        if (loc.accuracy > 200 || !placesLoaded) return
+        val prefs = cloud.prefs
+        val list = places
+        val inside = prefs.insidePlaces.toMutableSet()
+        val known = prefs.knownPlaces.toMutableSet()
+        val ids = list.map { it.id }.toSet()
+        inside.retainAll(ids)
+        known.retainAll(ids)
+        for (p in list) {
+            val d = FloatArray(1)
+            Location.distanceBetween(p.lat, p.lng, loc.latitude, loc.longitude, d)
+            val wasIn = p.id in inside
+            val margin = maxOf(40.0, minOf(loc.accuracy.toDouble(), 100.0))
+            val nowIn = if (wasIn) d[0] <= p.radius + margin else d[0] <= p.radius
+            if (nowIn) inside += p.id else inside -= p.id
+            if (p.id !in known) {
+                known += p.id // first look at this place: just remember, no alert
+            } else if (nowIn != wasIn) {
+                cloud.addEvent(cid, p.name, arrived = nowIn)
+            }
+        }
+        prefs.insidePlaces = inside
+        prefs.knownPlaces = known
+    }
+
+    /** Shows a notification for each new arrive/leave by someone else. */
+    private fun checkEvents(cid: String) {
+        val prefs = cloud.prefs
+        val now = System.currentTimeMillis()
+        if (prefs.lastEventAt == 0L) prefs.lastEventAt = now
+        val events = cloud.eventsSince(cid, prefs.lastEventAt)
+        if (events.isEmpty()) return
+        prefs.lastEventAt = events.maxOf { it.at }
+        if (!prefs.alerts) return
+        val me = prefs.uid
+        val nm = getSystemService(NotificationManager::class.java)
+        for (e in events) {
+            if (e.uid == me || now - e.at > 2 * 60 * 60_000L) continue
+            val text = if (e.arrived) "${e.person} arrived at ${e.place}" else "${e.person} left ${e.place}"
+            val open = PendingIntent.getActivity(
+                this, 1, Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val n = NotificationCompat.Builder(this, ALERTS)
+                .setSmallIcon(R.drawable.ic_stat_find)
+                .setContentTitle(text)
+                .setContentText(java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(e.at)))
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .build()
+            try {
+                nm.notify(e.id.hashCode(), n)
+            } catch (_: SecurityException) {
+                // Notifications turned off.
             }
         }
     }

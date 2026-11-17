@@ -29,6 +29,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -238,7 +240,7 @@ private fun MainScreen(s: UiState, vm: AppViewModel) {
             members = members,
             photos = s.photos,
             focus = focus,
-            onTapPerson = { focus = Focus(it) },
+            onTapPerson = { focus = Focus(it); vm.openHistory(it) },
             modifier = Modifier.fillMaxSize()
         )
 
@@ -343,13 +345,22 @@ private fun MainScreen(s: UiState, vm: AppViewModel) {
                                 address = s.addresses[p.uid],
                                 photo = s.photos[p.uid],
                                 distanceFromMe = if (me != null && p.uid != s.myUid) distanceMeters(me, p) else null,
-                                onShow = { focus = Focus(p.uid) },
+                                onShow = { focus = Focus(p.uid); vm.openHistory(p.uid) },
                                 onDirections = { openDirections(ctx, p) },
                             )
                         }
                     }
                 }
             }
+        }
+    }
+
+    if (s.history != null) {
+        ModalBottomSheet(
+            onDismissRequest = { vm.closeHistory() },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            HistorySheet(s, vm, onDirections = { openDirections(ctx, it) })
         }
     }
 
@@ -504,6 +515,7 @@ private fun SettingsSheet(s: UiState, vm: AppViewModel, onShowCode: () -> Unit, 
     Column(
         Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp)
             .padding(bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -574,6 +586,9 @@ private fun SettingsSheet(s: UiState, vm: AppViewModel, onShowCode: () -> Unit, 
         OutlinedButton(onClick = onShowCode, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Filled.PersonAdd, null); Spacer(Modifier.width(8.dp)); Text("Pair code for another phone")
         }
+
+        HorizontalDivider()
+        PlacesSection(s, vm)
 
         HorizontalDivider()
         Row(verticalAlignment = Alignment.CenterVertically) {

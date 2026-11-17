@@ -27,6 +27,15 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.coroutines.resume
 
+data class HistoryView(
+    val uid: String,
+    val dayOffset: Int,            // 0 = today, 1 = yesterday …
+    val points: List<HistPoint> = emptyList(),
+    val segments: List<Segment> = emptyList(),
+    val loading: Boolean = true,
+    val error: String? = null,
+)
+
 data class UiState(
     val ready: Boolean = false,
     val circle: Circle? = null,
@@ -45,13 +54,16 @@ data class UiState(
     /** "Checking…", "Downloading 40%", "You're on the newest version", or an error. */
     val updateStatus: String? = null,
     val updateBusy: Boolean = false,
+    val places: List<Place> = emptyList(),
+    val alerts: Boolean = true,
+    val history: HistoryView? = null,
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val cloud = Cloud(app)
     private val prefs = cloud.prefs
     private val _state = MutableStateFlow(
-        UiState(myUid = prefs.uid, myName = prefs.name, sharing = prefs.sharing)
+        UiState(myUid = prefs.uid, myName = prefs.name, sharing = prefs.sharing, alerts = prefs.alerts)
     )
     val state: StateFlow<UiState> = _state
 
@@ -96,6 +108,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             } else {
                                 _state.update { it.copy(circle = c, myUid = prefs.uid) }
                                 withContext(Dispatchers.IO) { syncPhotos(c) }
+                                runCatching { withContext(Dispatchers.IO) { cloud.places(cid) } }
+                                    .onSuccess { pl -> _state.update { it.copy(places = pl) } }
                             }
                         }
                         if (prefs.circleId != null) {
@@ -207,6 +221,74 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(busy = false) }
             }
         }
+    }
+
+    // ---------- History ----------
+
+    fun openHistory(uid: String, dayOffset: Int = 0) {
+        _state.update { it.copy(history = HistoryView(uid, dayOffset)) }
+        val cid = prefs.circleId ?: return
+        viewModelScope.launch {
+            try {
+                val zone = java.time.ZoneId.systemDefault()
+                val date = java.time.LocalDate.now(zone).minusDays(dayOffset.toLong())
+                val dayStart = date.atStartOfDay(zone).toInstant().toEpochMilli()
+                val dayEnd = date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
+                val (today, before) = withContext(Dispatchers.IO) {
+                    cloud.history(cid, uid, date.toString()) to
+                        runCatching { cloud.history(cid, uid, date.minusDays(1).toString()) }.getOrDefault(emptyList())
+                }
+                // Carry over where they were at midnight, so the day starts with that stay.
+                val points = (before.lastOrNull()?.let { listOf(it.copy(t = dayStart)) } ?: emptyList()) + today
+                val segs = Timeline.build(points, dayOffset == 0, System.currentTimeMillis(), dayEnd)
+                _state.update { s ->
+                    if (s.history?.uid != uid || s.history?.dayOffset != dayOffset) s
+                    else s.copy(history = HistoryView(uid, dayOffset, points, segs, loading = false))
+                }
+            } catch (e: Exception) {
+                _state.update { s ->
+                    if (s.history?.uid != uid) s
+                    else s.copy(history = s.history!!.copy(loading = false, error = "Couldn't load history. Check your connection."))
+                }
+            }
+        }
+    }
+
+    fun closeHistory() = _state.update { it.copy(history = null) }
+
+    /** A saved place's name if the spot is inside one, otherwise the street address. */
+    suspend fun label(lat: Double, lng: Double): String? {
+        val out = FloatArray(1)
+        _state.value.places
+            .map { p -> android.location.Location.distanceBetween(p.lat, p.lng, lat, lng, out); p to out[0] }
+            .filter { (p, d) -> d <= p.radius + 75 }
+            .minByOrNull { it.second }
+            ?.let { return it.first.name }
+        val key = String.format(Locale.US, "%.4f,%.4f", lat, lng)
+        geoCache[key]?.let { return it }
+        return withContext(Dispatchers.IO) { reverseGeocode(lat, lng) }?.also { geoCache[key] = it }
+    }
+
+    // ---------- Places & alerts ----------
+
+    fun savePlace(name: String, lat: Double, lng: Double, radius: Double, id: String? = null) = act {
+        val cid = prefs.circleId ?: return@act
+        val p = Place(id ?: Cloud.randomId(16), name.trim(), lat, lng, radius)
+        cloud.savePlace(cid, p)
+        _state.update { s -> s.copy(places = (s.places.filter { it.id != p.id } + p).sortedBy { it.name.lowercase() }) }
+        LocationService.start(getApplication()) // so the sharing service picks it up now
+    }
+
+    fun deletePlace(id: String) = act {
+        val cid = prefs.circleId ?: return@act
+        cloud.deletePlace(cid, id)
+        _state.update { s -> s.copy(places = s.places.filter { it.id != id }) }
+        LocationService.start(getApplication())
+    }
+
+    fun setAlerts(on: Boolean) {
+        prefs.alerts = on
+        _state.update { it.copy(alerts = on) }
     }
 
     // ---------- App updates ----------

@@ -44,6 +44,24 @@ service cloud.firestore {
         allow delete: if inCircle(cid);
       }
 
+      // Location history: one doc per person per day, id "<uid>_<yyyy-mm-dd>". Only the owner writes it.
+      match /history/{docId} {
+        allow read: if inCircle(cid);
+        allow create, update, delete: if inCircle(cid) && docId.matches(request.auth.uid + '_[0-9-]+');
+      }
+
+      // Saved places (Home, Work, custom) shared by everyone in the circle.
+      match /places/{placeId} {
+        allow read, write: if inCircle(cid);
+      }
+
+      // "Arrived at / left" events, written by the phone that moved, read by the others.
+      match /events/{eventId} {
+        allow read: if inCircle(cid);
+        allow create: if inCircle(cid) && request.resource.data.uid == request.auth.uid;
+        allow delete: if inCircle(cid);
+      }
+
       // Profile photos (small JPEGs, base64). Everyone in the circle sees them; you can only set your own.
       match /photos/{uid} {
         allow read: if inCircle(cid);
