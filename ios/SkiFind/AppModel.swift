@@ -2,6 +2,7 @@ import Foundation
 import CoreLocation
 import SwiftUI
 import UIKit
+import UserNotifications
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -16,6 +17,16 @@ final class AppModel: ObservableObject {
     @Published var addresses: [String: String] = [:]
     /// uid -> profile photo
     @Published var photos: [String: UIImage] = [:]
+    @Published var places: [Place] = Store.places
+    @Published var alerts: Bool = Store.alerts
+
+    // History sheet
+    @Published var historyUid: String?
+    @Published var historyDay = 0          // 0 = today, 1 = yesterday …
+    @Published var historyPoints: [HistPoint] = []
+    @Published var historySegments: [Segment] = []
+    @Published var historyLoading = false
+    @Published var historyError: String?
 
     private var pollTask: Task<Void, Never>?
     private var geoCache: [String: String] = [:]
@@ -44,6 +55,7 @@ final class AppModel: ObservableObject {
         } else {
             pollTask?.cancel()
             pollTask = nil
+            AppDelegate.scheduleRefresh()
         }
     }
 
@@ -73,6 +85,10 @@ final class AppModel: ObservableObject {
                     circle = c
                     myUid = Store.uid
                     await syncPhotos(c)
+                    if let pl = try? await Cloud.shared.places(cid) {
+                        if pl != places { places = pl }
+                        LocationSharer.shared.setPlaces(pl)
+                    }
                 } else {
                     // Removed on the other phone.
                     Store.circleId = nil
@@ -88,6 +104,7 @@ final class AppModel: ObservableObject {
             if visible != people { people = visible }
             offline = false
             await lookupAddresses(visible)
+            await LocationSharer.shared.checkEvents()
         } catch {
             offline = true
         }
@@ -236,6 +253,99 @@ final class AppModel: ObservableObject {
             PhotoCache.remove(me)
             self.photos[me] = nil
         }
+    }
+
+    // MARK: History
+
+    func openHistory(_ uid: String, day: Int = 0) {
+        historyUid = uid
+        historyDay = day
+        historyPoints = []
+        historySegments = []
+        historyError = nil
+        historyLoading = true
+        guard let cid = Store.circleId else { return }
+        Task {
+            let cal = Calendar.current
+            let date = cal.date(byAdding: .day, value: -day, to: cal.startOfDay(for: Date()))!
+            let dayEnd = cal.date(byAdding: .day, value: 1, to: date)!.addingTimeInterval(-1)
+            let prev = cal.date(byAdding: .day, value: -1, to: date)!
+            do {
+                let today = try await Cloud.shared.history(cid, uid: uid, day: Cloud.dayKey(date))
+                let before = (try? await Cloud.shared.history(cid, uid: uid, day: Cloud.dayKey(prev))) ?? []
+                // Carry over where they were at midnight, so the day starts with that stay.
+                var points = today
+                if let last = before.last {
+                    points.insert(HistPoint(lat: last.lat, lng: last.lng, t: date, accuracy: last.accuracy), at: 0)
+                }
+                guard historyUid == uid, historyDay == day else { return }
+                historyPoints = points
+                historySegments = Timeline.build(points, isToday: day == 0, now: Date(), dayEnd: dayEnd)
+                historyLoading = false
+            } catch {
+                guard historyUid == uid, historyDay == day else { return }
+                historyError = "Couldn't load history. Check your connection."
+                historyLoading = false
+            }
+        }
+    }
+
+    /// A saved place's name if the spot is inside one, otherwise the street address.
+    func label(lat: Double, lng: Double) async -> String? {
+        let here = CLLocation(latitude: lat, longitude: lng)
+        if let p = places
+            .map({ ($0, here.distance(from: CLLocation(latitude: $0.lat, longitude: $0.lng))) })
+            .filter({ $0.1 <= $0.0.radius + 75 })
+            .min(by: { $0.1 < $1.1 })?.0 {
+            return p.name
+        }
+        let key = String(format: "%.4f,%.4f", lat, lng)
+        if let cached = geoCache[key] { return cached }
+        // One lookup at a time; Apple limits how fast we can ask.
+        for _ in 0..<20 where geocoder.isGeocoding { try? await Task.sleep(nanoseconds: 300_000_000) }
+        guard let m = try? await geocoder.reverseGeocodeLocation(here).first else { return nil }
+        let street = [m.subThoroughfare, m.thoroughfare].compactMap { $0 }.joined(separator: " ")
+        let parts = [street, m.locality ?? ""].filter { !$0.isEmpty }
+        let text = parts.isEmpty ? (m.name ?? "") : parts.joined(separator: ", ")
+        guard !text.isEmpty else { return nil }
+        geoCache[key] = text
+        return text
+    }
+
+    // MARK: Places & alerts
+
+    func savePlace(name: String, lat: Double, lng: Double, radius: Double, id: String? = nil) {
+        let p = Place(id: id ?? Cloud.randomId(16), name: name.trimmingCharacters(in: .whitespaces),
+                      lat: lat, lng: lng, radius: radius)
+        askNotificationPermission()
+        act {
+            guard let cid = Store.circleId else { return }
+            try await Cloud.shared.savePlace(cid, p)
+            var list = self.places.filter { $0.id != p.id }
+            list.append(p)
+            list.sort { $0.name.lowercased() < $1.name.lowercased() }
+            self.places = list
+            LocationSharer.shared.setPlaces(list)
+        }
+    }
+
+    func deletePlace(_ id: String) {
+        act {
+            guard let cid = Store.circleId else { return }
+            try await Cloud.shared.deletePlace(cid, id: id)
+            self.places.removeAll { $0.id == id }
+            LocationSharer.shared.setPlaces(self.places)
+        }
+    }
+
+    func setAlerts(_ on: Bool) {
+        Store.alerts = on
+        alerts = on
+        if on { askNotificationPermission() }
+    }
+
+    func askNotificationPermission() {
+        Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) }
     }
 
     // MARK: Street addresses

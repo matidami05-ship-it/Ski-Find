@@ -25,7 +25,8 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         NSLocationWhenInUseUsageDescription: Ski Find shares your location with the people you paired with, and shows how far away they are.
         NSLocationAlwaysAndWhenInUseUsageDescription: Ski Find keeps sharing your location with the people you paired with while the app is closed, so they can always see where you are. You can pause sharing anytime in Settings.
-        UIBackgroundModes: [location]
+        UIBackgroundModes: [location, fetch]
+        BGTaskSchedulerPermittedIdentifiers: [com.skistudio.find.refresh]
         UILaunchScreen:
           UIColorName: AccentColor
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]

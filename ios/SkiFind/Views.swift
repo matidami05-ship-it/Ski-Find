@@ -115,7 +115,7 @@ struct MainView: View {
                             color: personColor(p.id, me: model.myUid, members: model.members),
                             dim: !p.sharing || (p.updated.map { Date().timeIntervalSince($0) > 3600 } ?? false)
                         )
-                        .onTapGesture { focus(on: p) }
+                        .onTapGesture { focus(on: p); model.openHistory(p.id) }
                     }
                 }
             }
@@ -140,6 +140,11 @@ struct MainView: View {
             SettingsView()
                 .environmentObject(model)
                 .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: Binding(get: { model.historyUid != nil }, set: { if !$0 { model.historyUid = nil } })) {
+            HistoryView()
+                .environmentObject(model)
+                .presentationDetents([.large])
         }
         .onAppear { model.startPolling() }
         .onChange(of: model.people.isEmpty) { _, empty in
@@ -212,7 +217,7 @@ struct MainView: View {
                         address: model.addresses[p.id],
                         photo: model.photos[p.id],
                         distance: distanceFromMe(p),
-                        onShow: { focus(on: p) }
+                        onShow: { focus(on: p); model.openHistory(p.id) }
                     )
                     if p.id != sorted.last?.id { Divider().padding(.leading, 74) }
                 }
@@ -266,6 +271,14 @@ func initial(_ name: String) -> String {
 
 extension String {
     func ifEmpty(_ fallback: String) -> String { isEmpty ? fallback : self }
+}
+
+@MainActor
+func directions(to person: Person) {
+    let name = person.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+    if let url = URL(string: "maps://?daddr=\(person.lat),\(person.lng)&dirflg=d&q=\(name)") {
+        UIApplication.shared.open(url)
+    }
 }
 
 func shareText(_ code: String) -> String {
@@ -438,12 +451,7 @@ struct PersonRow: View {
         return bits.joined(separator: " · ")
     }
 
-    private func openDirections() {
-        let name = person.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        if let url = URL(string: "maps://?daddr=\(person.lat),\(person.lng)&dirflg=d&q=\(name)") {
-            UIApplication.shared.open(url)
-        }
-    }
+    private func openDirections() { directions(to: person) }
 }
 
 // MARK: - Settings
@@ -550,6 +558,8 @@ struct SettingsView: View {
                 } footer: {
                     Text("Enter the 6-letter code shown on the other phone to share with each other.")
                 }
+
+                PlacesSection()
 
                 Section {
                     Button("Location settings") { LocationSharer.shared.openSettings() }

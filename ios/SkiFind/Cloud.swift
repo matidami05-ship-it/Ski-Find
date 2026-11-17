@@ -28,6 +28,27 @@ enum Store {
     static var lastUploadAt: Double { get { d.double(forKey: "lastUploadAt") } set { d.set(newValue, forKey: "lastUploadAt") } }
     static var lastLat: Double { get { d.double(forKey: "lastLat") } set { d.set(newValue, forKey: "lastLat") } }
     static var lastLng: Double { get { d.double(forKey: "lastLng") } set { d.set(newValue, forKey: "lastLng") } }
+    static var lastHistoryDay: String? { get { d.string(forKey: "lastHistoryDay") } set { d.set(newValue, forKey: "lastHistoryDay") } }
+    static var alerts: Bool {
+        get { d.object(forKey: "alerts") == nil ? true : d.bool(forKey: "alerts") }
+        set { d.set(newValue, forKey: "alerts") }
+    }
+    static var lastEventAt: Double { get { d.double(forKey: "lastEventAt") } set { d.set(newValue, forKey: "lastEventAt") } }
+    /// Place ids this phone is inside right now.
+    static var insidePlaces: Set<String> {
+        get { Set(d.stringArray(forKey: "insidePlaces") ?? []) }
+        set { d.set(Array(newValue), forKey: "insidePlaces") }
+    }
+    /// Place ids we've already checked once (the first check never alerts).
+    static var knownPlaces: Set<String> {
+        get { Set(d.stringArray(forKey: "knownPlaces") ?? []) }
+        set { d.set(Array(newValue), forKey: "knownPlaces") }
+    }
+    /// Last known list of places, so the app can check them when iOS wakes it in the background.
+    static var places: [Place] {
+        get { (d.data(forKey: "places")).flatMap { try? JSONDecoder().decode([Place].self, from: $0) } ?? [] }
+        set { d.set(try? JSONEncoder().encode(newValue), forKey: "places") }
+    }
 }
 
 struct Person: Identifiable, Equatable {
@@ -44,6 +65,34 @@ struct Person: Identifiable, Equatable {
     var updated: Date?
 
     var coordinate: CLLocationCoordinate2D { .init(latitude: lat, longitude: lng) }
+}
+
+struct Place: Identifiable, Equatable, Codable {
+    let id: String
+    var name: String
+    var lat: Double
+    var lng: Double
+    var radius: Double
+
+    var coordinate: CLLocationCoordinate2D { .init(latitude: lat, longitude: lng) }
+}
+
+struct HistPoint: Equatable {
+    let lat: Double
+    let lng: Double
+    let t: Date
+    let accuracy: Double
+
+    var coordinate: CLLocationCoordinate2D { .init(latitude: lat, longitude: lng) }
+}
+
+struct PlaceEvent {
+    let id: String
+    let uid: String
+    let person: String
+    let place: String
+    let arrived: Bool
+    let at: Double // ms
 }
 
 struct Circle: Equatable {
@@ -75,6 +124,10 @@ actor Cloud {
     // MARK: HTTP
 
     private func http(_ method: String, _ url: String, _ body: [String: Any]?, token: String?) async throws -> [String: Any] {
+        (try await httpAny(method, url, body, token: token) as? [String: Any]) ?? [:]
+    }
+
+    private func httpAny(_ method: String, _ url: String, _ body: [String: Any]?, token: String?) async throws -> Any {
         guard let u = URL(string: url) else { throw HTTPError(code: 0, body: "bad url") }
         var req = URLRequest(url: u)
         req.httpMethod = method
@@ -87,8 +140,8 @@ actor Cloud {
         guard (200..<300).contains(code) else {
             throw HTTPError(code: code, body: String(data: data, encoding: .utf8) ?? "")
         }
-        if data.isEmpty { return [:] }
-        return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        if data.isEmpty { return [String: Any]() }
+        return try JSONSerialization.jsonObject(with: data)
     }
 
     // MARK: Sign-in (anonymous Firebase account, kept for good)
@@ -287,10 +340,106 @@ actor Cloud {
             "platform": str("ios"),
         ]
         if let battery { f["battery"] = int(Int64(battery)) }
-        try await commit([[
-            "update": ["name": name("findCircles/\(cid)/locations/\(uid)"), "fields": f],
-            "updateTransforms": [["fieldPath": "updated", "setToServerValue": "REQUEST_TIME"]],
-        ]])
+        let now = Date()
+        let day = Self.dayKey(now)
+        let point = map([
+            "lat": dbl(lat), "lng": dbl(lng),
+            "t": int(Int64(now.timeIntervalSince1970 * 1000)), "acc": dbl(accuracy),
+        ])
+        var writes: [[String: Any]] = [
+            [
+                "update": ["name": name("findCircles/\(cid)/locations/\(uid)"), "fields": f],
+                "updateTransforms": [["fieldPath": "updated", "setToServerValue": "REQUEST_TIME"]],
+            ],
+            // Today's history doc, one point appended.
+            [
+                "update": ["name": name("findCircles/\(cid)/history/\(uid)_\(day)"), "fields": ["day": str(day)]],
+                "updateMask": ["fieldPaths": ["day"]],
+                "updateTransforms": [["fieldPath": "points", "appendMissingElements": ["values": [point]]]],
+            ],
+        ]
+        // First point of a new day: drop history older than a week.
+        if Store.lastHistoryDay != day {
+            writes.append(["delete": name("findCircles/\(cid)/history/\(uid)_\(Self.dayKey(now.addingTimeInterval(-8 * 86400)))")])
+        }
+        try await commit(writes)
+        Store.lastHistoryDay = day
+    }
+
+    // MARK: History
+
+    /// One person's points for a day ("yyyy-MM-dd"), oldest first.
+    func history(_ cid: String, uid: String, day: String) async throws -> [HistPoint] {
+        guard let d = try await getDoc("findCircles/\(cid)/history/\(uid)_\(day)") else { return [] }
+        let values = (((fields(d)["points"] as? [String: Any])?["arrayValue"] as? [String: Any])?["values"] as? [[String: Any]]) ?? []
+        return values.compactMap { v -> HistPoint? in
+            guard let f = (v["mapValue"] as? [String: Any])?["fields"] as? [String: Any],
+                  let lat = num(f, "lat"), let lng = num(f, "lng"), let t = num(f, "t") else { return nil }
+            return HistPoint(lat: lat, lng: lng, t: Date(timeIntervalSince1970: t / 1000), accuracy: num(f, "acc") ?? 0)
+        }.sorted { $0.t < $1.t }
+    }
+
+    // MARK: Places
+
+    func places(_ cid: String) async throws -> [Place] {
+        let r = try await http("GET", "\(base)/findCircles/\(cid)/places?pageSize=50", nil, token: try await token())
+        let docs = r["documents"] as? [[String: Any]] ?? []
+        return docs.compactMap { d -> Place? in
+            let f = fields(d)
+            guard let path = d["name"] as? String, let name = string(f, "name"),
+                  let lat = num(f, "lat"), let lng = num(f, "lng") else { return nil }
+            return Place(id: String(path.split(separator: "/").last ?? ""), name: name, lat: lat, lng: lng,
+                         radius: num(f, "radius") ?? 150)
+        }.sorted { $0.name.lowercased() < $1.name.lowercased() }
+    }
+
+    func savePlace(_ cid: String, _ p: Place) async throws {
+        let uid = try await uid()
+        try await commit([["update": [
+            "name": name("findCircles/\(cid)/places/\(p.id)"),
+            "fields": ["name": str(p.name), "lat": dbl(p.lat), "lng": dbl(p.lng), "radius": dbl(p.radius), "by": str(uid)],
+        ]]])
+    }
+
+    func deletePlace(_ cid: String, id: String) async throws {
+        try await commit([["delete": name("findCircles/\(cid)/places/\(id)")]])
+    }
+
+    // MARK: Arrive / leave events
+
+    func addEvent(_ cid: String, place: String, arrived: Bool) async throws {
+        let uid = try await uid()
+        try await commit([["update": [
+            "name": name("findCircles/\(cid)/events/\(Self.randomId(20))"),
+            "fields": [
+                "uid": str(uid), "person": str(Store.name), "place": str(place),
+                "kind": str(arrived ? "arrived" : "left"),
+                "at": int(Int64(Date().timeIntervalSince1970 * 1000)),
+            ],
+        ]]])
+    }
+
+    /// Events newer than `after` (ms), oldest first.
+    func eventsSince(_ cid: String, after: Double) async throws -> [PlaceEvent] {
+        let q: [String: Any] = ["structuredQuery": [
+            "from": [["collectionId": "events"]],
+            "where": ["fieldFilter": [
+                "field": ["fieldPath": "at"], "op": "GREATER_THAN", "value": int(Int64(after)),
+            ]],
+            "orderBy": [["field": ["fieldPath": "at"], "direction": "ASCENDING"]],
+            "limit": 20,
+        ]]
+        let r = try await httpAny("POST", "\(base)/findCircles/\(cid):runQuery", q, token: try await token())
+        let rows = r as? [[String: Any]] ?? []
+        return rows.compactMap { row -> PlaceEvent? in
+            guard let d = row["document"] as? [String: Any], let path = d["name"] as? String else { return nil }
+            let f = fields(d)
+            return PlaceEvent(
+                id: String(path.split(separator: "/").last ?? ""),
+                uid: string(f, "uid") ?? "", person: string(f, "person") ?? "",
+                place: string(f, "place") ?? "", arrived: string(f, "kind") == "arrived",
+                at: num(f, "at") ?? 0)
+        }
     }
 
     /// Marks this phone as paused without moving its pin.
@@ -366,6 +515,15 @@ actor Cloud {
             main = String(s[..<dot]) + "Z"
         }
         return ISO8601DateFormatter().date(from: main)?.addingTimeInterval(fraction)
+    }
+
+    static func dayKey(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
     }
 
     static func randomId(_ n: Int) -> String {
