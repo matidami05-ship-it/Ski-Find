@@ -124,17 +124,19 @@ class LocationService : Service() {
         fused = LocationServices.getFusedLocationProviderClient(this)
         cloud = Cloud(this)
         ensureChannel(this)
-        // Every minute: check for the other person's arrive/leave alerts; every 5 minutes refresh saved places.
+        // Every 30 s: answer refresh requests and check the other person's arrive/leave alerts;
+        // every 5 minutes refresh saved places.
         scope.launch {
             var tick = 0
             while (isActive) {
                 val cid = cloud.prefs.circleId
                 if (cid != null) {
-                    if (tick % 5 == 0) runCatching { places = cloud.places(cid); placesLoaded = true }
-                    runCatching { checkEvents(cid) }
+                    if (tick % 10 == 0) runCatching { places = cloud.places(cid); placesLoaded = true }
+                    runCatching { checkPing(cid) }
+                    if (tick % 2 == 0) runCatching { checkEvents(cid) }
                 }
                 tick++
-                delay(60_000)
+                delay(30_000)
             }
         }
         // Heartbeat so your partner can see you're still sharing while you sit still.
@@ -243,6 +245,19 @@ class LocationService : Service() {
         }
         prefs.insidePlaces = inside
         prefs.knownPlaces = known
+    }
+
+    /** Someone tapped refresh: send a fresh position now. */
+    @SuppressLint("MissingPermission")
+    private fun checkPing(cid: String) {
+        val prefs = cloud.prefs
+        val at = cloud.latestPing(cid)
+        if (at <= prefs.lastPingSeen) return
+        val first = prefs.lastPingSeen == 0L
+        prefs.lastPingSeen = at
+        if (first || System.currentTimeMillis() - at > 10 * 60_000L || !prefs.sharing) return
+        fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+            .addOnSuccessListener { loc -> if (loc != null) onFix(loc, force = true) }
     }
 
     /** Shows a notification for each new arrive/leave by someone else. */

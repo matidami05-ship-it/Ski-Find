@@ -57,6 +57,7 @@ data class UiState(
     val places: List<Place> = emptyList(),
     val alerts: Boolean = true,
     val history: HistoryView? = null,
+    val refreshing: Boolean = false,
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -126,6 +127,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 tick++
                 delay(10_000)
             }
+        }
+    }
+
+    /** Refresh button: reload now, send my position, and ask the other phones for theirs. */
+    fun refreshEveryone() {
+        val cid = prefs.circleId ?: return
+        _state.update { it.copy(refreshing = true) }
+        LocationService.start(getApplication())
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { cloud.ping(cid) } }
+            refreshNow()
+            // Keep the spinner a moment, then poll again once the other phone has had time to answer.
+            delay(4_000)
+            _state.update { it.copy(refreshing = false) }
+            delay(26_000)
+            refreshNow()
         }
     }
 

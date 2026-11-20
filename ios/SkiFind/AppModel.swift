@@ -71,6 +71,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    @Published var refreshing = false
+
+    /// Refresh button: reload now, send my position, and ask the other phones for theirs.
+    func refreshEveryone() {
+        guard let cid = Store.circleId else { return }
+        refreshing = true
+        LocationSharer.shared.refreshNow()
+        Task {
+            try? await Cloud.shared.ping(cid)
+            refreshNow()
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            refreshing = false
+            try? await Task.sleep(nanoseconds: 26_000_000_000)
+            refreshNow()
+        }
+    }
+
     func refreshNow() {
         pollTask?.cancel()
         pollTask = nil

@@ -212,6 +212,12 @@ final class LocationSharer: NSObject, ObservableObject {
         guard force || Date().timeIntervalSince(lastEventCheck) > 50 else { return }
         lastEventCheck = Date()
         let nowMs = Date().timeIntervalSince1970 * 1000
+        // Someone tapped refresh: send a fresh position.
+        if let at = try? await Cloud.shared.latestPing(cid), at > Store.lastPingSeen {
+            let first = Store.lastPingSeen == 0
+            Store.lastPingSeen = at
+            if !first && nowMs - at < 10 * 60 * 1000 { refreshNow() }
+        }
         if Store.lastEventAt == 0 { Store.lastEventAt = nowMs }
         guard let events = try? await Cloud.shared.eventsSince(cid, after: Store.lastEventAt), !events.isEmpty else { return }
         Store.lastEventAt = events.map(\.at).max() ?? Store.lastEventAt

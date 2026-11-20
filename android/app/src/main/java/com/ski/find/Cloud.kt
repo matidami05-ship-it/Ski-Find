@@ -59,6 +59,9 @@ class Prefs(ctx: Context) {
     var alerts: Boolean
         get() = p.getBoolean("alerts", true)
         set(v) = p.edit().putBoolean("alerts", v).apply()
+    var lastPingSeen: Long
+        get() = p.getLong("lastPingSeen", 0)
+        set(v) = p.edit().putLong("lastPingSeen", v).apply()
     var lastEventAt: Long
         get() = p.getLong("lastEventAt", 0)
         set(v) = p.edit().putLong("lastEventAt", v).apply()
@@ -416,6 +419,27 @@ class Cloud(ctx: Context) {
 
     fun deletePlace(cid: String, id: String) {
         commit(JSONObject().put("delete", name("findCircles/$cid/places/$id")))
+    }
+
+    // ---------- Refresh requests ----------
+
+    /** Asks the other phones to send a fresh location. */
+    fun ping(cid: String) {
+        val uid = uid()
+        commit(JSONObject().put("update", JSONObject()
+            .put("name", name("findCircles/$cid/pings/$uid"))
+            .put("fields", JSONObject().put("at", int(System.currentTimeMillis())))))
+    }
+
+    /** Newest refresh request from someone else (ms), or 0. */
+    fun latestPing(cid: String): Long {
+        val me = uid()
+        val r = http("GET", "$base/findCircles/$cid/pings?pageSize=20", null, token())
+        val docs = r.optJSONArray("documents") ?: return 0
+        return (0 until docs.length()).maxOfOrNull { i ->
+            val d = docs.getJSONObject(i)
+            if (d.getString("name").substringAfterLast('/') == me) 0L else num(fields(d), "at")?.toLong() ?: 0L
+        } ?: 0L
     }
 
     // ---------- Arrive / leave events ----------

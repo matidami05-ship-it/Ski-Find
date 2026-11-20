@@ -267,6 +267,18 @@ private fun MainScreen(s: UiState, vm: AppViewModel) {
                 }
             }
             Spacer(Modifier.weight(1f))
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                shadowElevation = 4.dp,
+                modifier = Modifier.size(44.dp).clickable(enabled = !s.refreshing) { vm.refreshEveryone() }
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    if (s.refreshing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    else Icon(Icons.Filled.Refresh, "Refresh locations")
+                }
+            }
+            Spacer(Modifier.width(8.dp))
             RoundButton(Icons.Filled.ZoomOutMap, "Show everyone") { focus = Focus(null); vm.refreshNow() }
             Spacer(Modifier.width(8.dp))
             RoundButton(Icons.Filled.Settings, "Settings") { showSettings = true }

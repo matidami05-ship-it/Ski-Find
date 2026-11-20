@@ -62,6 +62,12 @@ service cloud.firestore {
         allow delete: if inCircle(cid);
       }
 
+      // "Refresh" requests: when someone taps refresh, the other phones send a fresh location.
+      match /pings/{uid} {
+        allow read: if inCircle(cid);
+        allow write: if inCircle(cid) && request.auth.uid == uid;
+      }
+
       // Profile photos (small JPEGs, base64). Everyone in the circle sees them; you can only set your own.
       match /photos/{uid} {
         allow read: if inCircle(cid);

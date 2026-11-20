@@ -171,6 +171,18 @@ struct MainView: View {
             .padding(.horizontal, 14).padding(.vertical, 9)
             .background(.ultraThinMaterial, in: Capsule())
             Spacer()
+            Button { model.refreshEveryone() } label: {
+                ZStack {
+                    if model.refreshing { ProgressView() } else {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 16, weight: .semibold))
+                    }
+                }
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: SwiftUI.Circle())
+            }
+            .foregroundStyle(.primary)
+            .disabled(model.refreshing)
+            .accessibilityLabel("Refresh locations")
             CircleButton(system: "arrow.up.left.and.arrow.down.right") {
                 fitEveryone()
                 model.refreshNow()

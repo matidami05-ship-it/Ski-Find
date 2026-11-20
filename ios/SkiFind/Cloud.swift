@@ -33,6 +33,7 @@ enum Store {
         get { d.object(forKey: "alerts") == nil ? true : d.bool(forKey: "alerts") }
         set { d.set(newValue, forKey: "alerts") }
     }
+    static var lastPingSeen: Double { get { d.double(forKey: "lastPingSeen") } set { d.set(newValue, forKey: "lastPingSeen") } }
     static var lastEventAt: Double { get { d.double(forKey: "lastEventAt") } set { d.set(newValue, forKey: "lastEventAt") } }
     /// Place ids this phone is inside right now.
     static var insidePlaces: Set<String> {
@@ -403,6 +404,28 @@ actor Cloud {
 
     func deletePlace(_ cid: String, id: String) async throws {
         try await commit([["delete": name("findCircles/\(cid)/places/\(id)")]])
+    }
+
+    // MARK: Refresh requests
+
+    /// Asks the other phones to send a fresh location.
+    func ping(_ cid: String) async throws {
+        let uid = try await uid()
+        try await commit([["update": [
+            "name": name("findCircles/\(cid)/pings/\(uid)"),
+            "fields": ["at": int(Int64(Date().timeIntervalSince1970 * 1000))],
+        ]]])
+    }
+
+    /// Newest refresh request from someone else (ms), or 0.
+    func latestPing(_ cid: String) async throws -> Double {
+        let me = try await uid()
+        let r = try await http("GET", "\(base)/findCircles/\(cid)/pings?pageSize=20", nil, token: try await token())
+        let docs = r["documents"] as? [[String: Any]] ?? []
+        return docs.compactMap { d -> Double? in
+            guard let path = d["name"] as? String, !path.hasSuffix("/\(me)") else { return nil }
+            return num(fields(d), "at")
+        }.max() ?? 0
     }
 
     // MARK: Arrive / leave events
